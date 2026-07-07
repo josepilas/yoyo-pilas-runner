@@ -1,0 +1,36 @@
+YoYo Pilas Runner upstream references
+=========================================
+
+YoYo Loader Vita
+Repository: https://github.com/Rinnegatamante/yoyoloader_vita
+Role: UI and workflow inspiration: one library, simple game selector, per-game folders.
+
+gmloader-next
+Repository: https://github.com/JohnnyonFlame/gmloader-next
+Bundled commit: c2fca354df73761887c15f44a0b28ec823581cd5
+Role: GameMaker Android compatibility and execution layer.
+License: GPL-2.0. See vendor/gmloader-next/LICENSE.md.
+
+gmloadernext.squashfs runtime
+Repository: https://github.com/JeodC/RHH-Ports
+File: runtimes/gmloadernext.squashfs
+Runtime SHA256: 241E5C299C9DD7195D0857D036FDA0C924485084C5ED39A0BB60F3C95CDA3837
+Extracted binary: pilasrunner/bin/gmloadernext.aarch64
+Extracted binary SHA256: 419B9C51BB75C6E10CDFB5F1ECD3767629AA8D9B664B4EC83B57160F4EC3A562
+Role: Public prebuilt aarch64 runtime used by recent PortMaster GameMaker ports.
+
+gmloadernext.armhf binary
+Repository: https://github.com/JeodC/RHH-Ports
+File: ports/released/gamemakerengine/digitaltamersreborn/digitaltamersreborn/gmloadernext.armhf
+Extracted binary: pilasrunner/bin/gmloadernext.armhf
+Extracted binary SHA256: 789BE95F52F0CE7BD67E6FB3A7DA304BB7832B2764E8A15C9D3F4106FF80A984
+Role: Public prebuilt ARMv7/armhf gmloader-next binary used by a released PortMaster/RHH GameMaker port.
+
+droidports
+Repository: https://github.com/JohnnyonFlame/droidports
+Role: historical gmloader implementation and ARM Linux compatibility reference.
+
+PortMaster GameMaker Studio documentation
+Repository: https://github.com/JanTrueno/PortMaster-Wiki
+Document: docs/contribute/porting/engines/gamemaker-studio.md
+Role: PortMaster packaging, gmloader-next architecture notes, GptokeyB conventions.

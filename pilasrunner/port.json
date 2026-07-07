@@ -1,0 +1,32 @@
+{
+  "version": 3,
+  "name": "yoyopilasrunner.zip",
+  "items": [
+    "YoYo Pilas Runner.sh",
+    "pilasrunner"
+  ],
+  "items_opt": [],
+  "attr": {
+    "title": "YoYo Pilas Runner",
+    "desc": "A unified PortMaster frontend inspired by YoYo Loader Vita for launching Android GameMaker Studio APKs through gmloader-next.",
+    "inst": "Copy Android GameMaker Studio APKs into pilasrunner/games, then launch YoYo Pilas Runner.sh from PortMaster.",
+    "genres": [
+      "tool"
+    ],
+    "porter": [
+      "YoYo Pilas Runner"
+    ],
+    "image": {
+      "cover": "pilasrunner/cover.png",
+      "screenshot": "pilasrunner/screenshot.png"
+    },
+    "rtr": false,
+    "runtime": null,
+    "reqs": [],
+    "arch": [
+      "aarch64",
+      "armhf"
+    ],
+    "exp": true
+  }
+}

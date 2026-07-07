@@ -1,0 +1,21 @@
+[submodule "3rdparty/libbsd"]
+	path = 3rdparty/libbsd
+	url = https://gitlab.freedesktop.org/libbsd/libbsd.git
+[submodule "3rdparty/libmd"]
+	path = 3rdparty/libmd
+	url = https://gitlab.freedesktop.org/libbsd/libmd
+[submodule "3rdparty/json"]
+	path = 3rdparty/json
+	url = https://github.com/nlohmann/json.git
+[submodule "3rdparty/libzip"]
+	path = 3rdparty/libzip
+	url = https://github.com/nih-at/libzip
+[submodule "3rdparty/FMOD_SDL"]
+	path = 3rdparty/FMOD_SDL
+	url = https://github.com/flibitijibibo/FMOD_SDL
+[submodule "3rdparty/lua"]
+	path = 3rdparty/lua
+	url = https://github.com/lua/lua
+[submodule "3rdparty/SDL_kitchensink"]
+	path = 3rdparty/SDL_kitchensink
+	url = https://github.com/katajakasa/SDL_kitchensink

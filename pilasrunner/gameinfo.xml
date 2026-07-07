@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<gameList>
+  <game>
+    <path>./YoYo Pilas Runner.sh</path>
+    <name>YoYo Pilas Runner</name>
+    <desc>A PortMaster frontend for launching Android GameMaker Studio APKs with gmloader-next.</desc>
+    <developer>YoYo Pilas Runner</developer>
+    <publisher>YoYo Pilas Runner</publisher>
+    <genre>Tool</genre>
+    <image>./pilasrunner/cover.png</image>
+  </game>
+</gameList>
