@@ -1,5 +1,7 @@
 # YoYo Pilas Runner
 
+<img src="https://files.catbox.moe/3w8i1r.webp" width="600" height="400" alt="Imagem">
+
 YoYo Pilas Runner is a unified PortMaster frontend inspired by the simple library experience of [YoYo Loader Vita](https://github.com/Rinnegatamante/yoyoloader_vita). Its goal is to let users run Android games made with GameMaker Studio by copying APK files into one folder and selecting them from a simple menu.
 
 The execution layer is [gmloader-next](https://github.com/JohnnyonFlame/gmloader-next). This package now includes prebuilt `gmloadernext.aarch64` and `gmloadernext.armhf` binaries, the gmloader-next source tree under `pilasrunner/vendor/gmloader-next`, Android redistributable libraries, automatic `gmloader.json` generation, per-game saves/shaders/cache, logs, optional per-game controls, and basic PortMaster helper integration. A legacy `gmloader.armhf` fallback is also included for older 32-bit experiments, but gmloader-next is preferred whenever possible.
