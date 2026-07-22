@@ -17,8 +17,8 @@
       "YoYo Pilas Runner"
     ],
     "image": {
-      "cover": "pilasrunner/cover.png",
-      "screenshot": "pilasrunner/screenshot.png"
+      "cover": "pilasrunner/cover.webp",
+      "screenshot": "pilasrunner/screenshot.webp"
     },
     "rtr": false,
     "runtime": null,

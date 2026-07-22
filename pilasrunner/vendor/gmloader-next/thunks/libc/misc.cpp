@@ -56,7 +56,9 @@ extern "C" ABI_ATTR void *dlopen_impl(const char *filename, int flags)
     char *fn = strdup(filename);
     char *ex = basename(fn);
     int ret = strncmp(ex, "libEGL", 6) == 0 ||
-              strncmp(ex, "libGL", 5) == 0;
+              strncmp(ex, "libGL", 5) == 0 ||
+              strncmp(ex, "libOpenSLES", 11) == 0 ||
+              strncmp(ex, "libopensles", 11) == 0;
 
     return (ret) ? (void*)0xDEAD : NULL;
 }

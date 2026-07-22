@@ -54,6 +54,12 @@ fail() {
 
 reset_boot_logs() {
     mkdir -p "$LOG_DIR" 2>/dev/null || true
+    if [ -s "$DETAILED_LOG" ]; then
+        cp "$DETAILED_LOG" "$LOG_DIR/detailed.prev.log" 2>/dev/null || true
+    fi
+    if [ -s "$READABLE_LOG" ]; then
+        cp "$READABLE_LOG" "$LOG_DIR/log.prev.txt" 2>/dev/null || true
+    fi
     : > "$DETAILED_LOG" 2>/dev/null || true
     : > "$READABLE_LOG" 2>/dev/null || true
 }
@@ -155,6 +161,7 @@ EOF
 }
 
 clear_boot_terminal_screen() {
+    [ "${PILASRUNNER_CLEAR_TTY_ON_EXIT:-0}" = "1" ] || return 0
     [ "${PILASRUNNER_KEEP_TTY:-0}" = "1" ] && return 0
     [ -e "$BOOT_TTY" ] || return 0
     [ -w "$BOOT_TTY" ] || return 0

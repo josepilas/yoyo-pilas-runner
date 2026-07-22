@@ -41,21 +41,26 @@ CFG_default_arch="auto"
 CFG_games_dir="games"
 CFG_cache_dir="cache"
 CFG_ui_path="ui/index.html"
-CFG_ui_font="assets/fonts/Alata-Regular.ttf"
+CFG_ui_font="assets/fonts/Alata-Regular.woff2"
 CFG_fullscreen="true"
 CFG_dump_shaders="false"
 CFG_trace_vm="false"
 CFG_display_probe="auto"
 CFG_display_wait_seconds="3"
+CFG_audio_driver="auto"
+CFG_audio_sample_rate="48000"
+CFG_opensles_bridge="off"
 CFG_controls_backend="auto"
 CFG_gptokeyb_binary=""
+CFG_hotkey_quit="true"
+CFG_hotkey_quit_grace_seconds="1"
 CFG_dry_run="false"
 
 LOG_ENABLED="true"
 GAMES_DIR="$RUNTIME_DIR/games"
 CACHE_DIR="$RUNTIME_DIR/cache"
 UI_ENTRY="$RUNTIME_DIR/ui/index.html"
-UI_FONT="$RUNTIME_DIR/assets/fonts/Alata-Regular.ttf"
+UI_FONT="$RUNTIME_DIR/assets/fonts/Alata-Regular.woff2"
 APP_XDG_RUNTIME_DIR=""
 
 ARCH_RAW="unknown"
@@ -66,6 +71,12 @@ LOADER_ARCH=""
 LOADER_AARCH64="$BIN_DIR/gmloadernext.aarch64"
 LOADER_ARMHF="$BIN_DIR/gmloadernext.armhf"
 LEGACY_GMLOADER_ARMHF="$BIN_DIR/gmloader.armhf"
+NATIVE_UI_AARCH64="$BIN_DIR/pilasrunner-ui.aarch64"
+NATIVE_UI_ARMHF="$BIN_DIR/pilasrunner-ui.armhf"
+NATIVE_HOTKEY_AARCH64="$BIN_DIR/pilasrunner-hotkey.aarch64"
+NATIVE_HOTKEY_ARMHF="$BIN_DIR/pilasrunner-hotkey.armhf"
+ELF_NEEDER_AARCH64="$BIN_DIR/pilasrunner-elf-needer.aarch64"
+ELF_NEEDER_ARMHF="$BIN_DIR/pilasrunner-elf-needer.armhf"
 VENDOR_LOADER_AARCH64="$GMLOADER_NEXT_DIR/build/aarch64-linux-gnu/gmloader/gmloadernext.aarch64"
 VENDOR_LOADER_ARMHF="$GMLOADER_NEXT_DIR/build/arm-linux-gnueabihf/gmloader/gmloadernext.armhf"
 LOADER_MODE="next"
@@ -73,6 +84,13 @@ GPTOKEYB_BIN=""
 GPTOKEYB_CONFIG=""
 GPTOKEYB_PID=""
 GPTOKEYB_WAS_STARTED="false"
+HOTKEY_WATCHER_PID=""
+HOTKEY_WATCHER_PIDS=""
+HOTKEY_FORCE_QUIT_FLAG=""
+HOTKEY_WAS_TRIGGERED="false"
+MENU_TTY=""
+MENU_INPUT_FD="0"
+MENU_OUTPUT_FD="1"
 
 GAME_NAMES=()
 GAME_APKS=()
@@ -95,6 +113,9 @@ GMLOADER_JSON=""
 RUN_INFO=""
 GAME_LOG=""
 READABLE_GAME_STARTED="false"
+OPENSL_OVERLAY_ROOT=""
+OPENSL_OVERLAY_ARCH_DIR=""
+OPENSL_BRIDGE_LIB=""
 
 APK_HAS_ARMV7="false"
 APK_HAS_ARM64="false"
@@ -343,7 +364,7 @@ cache_dir=cache
 ui_path=ui/index.html
 
 # Default UI font. The site demo and packaged interface use this same font file.
-ui_font=assets/fonts/Alata-Regular.ttf
+ui_font=assets/fonts/Alata-Regular.woff2
 
 # Fullscreen preference. Some runtimes may ignore this value.
 fullscreen=true
@@ -361,11 +382,27 @@ display_probe=auto
 # Maximum seconds to wait for the configured display probe before launching anyway.
 display_wait_seconds=3
 
+# SDL audio driver: auto, alsa, pulse, pipewire, dsp, or off.
+audio_driver=auto
+
+# Shared sample rate for SDL audio and optional libOpenSLES SDL backend.
+audio_sample_rate=48000
+
+# Experimental OpenSL ES bridge injection: off, on, or force.
+# Keep this off for maximum game compatibility. Enable only while testing audio fixes.
+opensles_bridge=off
+
 # Control mapper backend: auto, none, or gptokeyb.
 controls_backend=auto
 
 # Optional explicit gptokeyb/gptokeyb2 path. Leave empty for auto-detection.
 gptokeyb_binary=
+
+# Force-close the running game when Select + Start are pressed together.
+hotkey_quit=true
+
+# Seconds to wait after TERM before KILL when the hotkey force-quit is used.
+hotkey_quit_grace_seconds=1
 
 # Validate scanning, config generation, controls, and loader selection without
 # executing the ARM loader binary. Useful for desktop QA.
@@ -555,6 +592,41 @@ normalize_wait_seconds() {
     printf '%s' "$fallback"
 }
 
+normalize_audio_driver() {
+    local value
+    value="$(lower "$(trim "$1")")"
+
+    case "$value" in
+        auto|alsa|pulse|pipewire|dsp|off) printf '%s' "$value" ;;
+        pulseaudio) printf '%s' 'pulse' ;;
+        none|disabled|false|0) printf '%s' 'off' ;;
+        *)
+            log_warn "Invalid audio_driver value: '$1'. Using 'auto'."
+            printf '%s' 'auto'
+            ;;
+    esac
+}
+
+normalize_sample_rate() {
+    local value
+    local fallback="$2"
+    local key_name="$3"
+    value="$(trim "$1")"
+
+    if printf '%s' "$value" | grep -Eq '^[0-9]+$'; then
+        if [ "$value" -ge 8000 ] && [ "$value" -le 192000 ]; then
+            printf '%s' "$value"
+            return 0
+        fi
+        log_warn "Value for $key_name is outside the supported range: '$1'. Using '$fallback'."
+        printf '%s' "$fallback"
+        return 0
+    fi
+
+    log_warn "Invalid integer value for $key_name: '$1'. Using '$fallback'."
+    printf '%s' "$fallback"
+}
+
 normalize_float() {
     local value
     local fallback="$2"
@@ -639,6 +711,19 @@ load_global_config() {
             trace_vm) CFG_trace_vm="$(normalize_bool "$value" "$CFG_trace_vm" "$key")" ;;
             display_probe) CFG_display_probe="$(normalize_display_probe "$value")" ;;
             display_wait_seconds) CFG_display_wait_seconds="$(normalize_wait_seconds "$value" "$CFG_display_wait_seconds" "$key")" ;;
+            audio_driver) CFG_audio_driver="$(normalize_audio_driver "$value")" ;;
+            audio_sample_rate) CFG_audio_sample_rate="$(normalize_sample_rate "$value" "$CFG_audio_sample_rate" "$key")" ;;
+            opensles_bridge)
+                value="$(lower "$(trim "$value")")"
+                case "$value" in
+                    off|false|0|no) CFG_opensles_bridge="off" ;;
+                    on|true|1|yes) CFG_opensles_bridge="on" ;;
+                    force) CFG_opensles_bridge="force" ;;
+                    *)
+                        log_warn "Invalid opensles_bridge value: '$value'. Using '$CFG_opensles_bridge'."
+                        ;;
+                esac
+                ;;
             dry_run) CFG_dry_run="$(normalize_bool "$value" "$CFG_dry_run" "$key")" ;;
             controls_backend)
                 value="$(lower "$(trim "$value")")"
@@ -650,6 +735,8 @@ load_global_config() {
                 esac
                 ;;
             gptokeyb_binary) CFG_gptokeyb_binary="$value" ;;
+            hotkey_quit) CFG_hotkey_quit="$(normalize_bool "$value" "$CFG_hotkey_quit" "$key")" ;;
+            hotkey_quit_grace_seconds) CFG_hotkey_quit_grace_seconds="$(normalize_wait_seconds "$value" "$CFG_hotkey_quit_grace_seconds" "$key")" ;;
             *) log_warn "Unknown global.ini option ignored: $key" ;;
         esac
     done < "$GLOBAL_CONFIG"
@@ -667,6 +754,26 @@ apply_environment_overrides() {
     if [ -n "${PILASRUNNER_DEFAULT_ARCH:-}" ]; then
         CFG_default_arch="$(normalize_arch_setting "${PILASRUNNER_DEFAULT_ARCH:-}")"
         log_warn "PILASRUNNER_DEFAULT_ARCH overrides default_arch. default_arch=$CFG_default_arch"
+    fi
+
+    if [ -n "${PILASRUNNER_AUDIO_DRIVER:-}" ]; then
+        CFG_audio_driver="$(normalize_audio_driver "${PILASRUNNER_AUDIO_DRIVER:-}")"
+        log_warn "PILASRUNNER_AUDIO_DRIVER overrides audio_driver. audio_driver=$CFG_audio_driver"
+    fi
+
+    if [ -n "${PILASRUNNER_OPENSL_BRIDGE:-}" ]; then
+        case "$(lower "$(trim "${PILASRUNNER_OPENSL_BRIDGE:-}")")" in
+            off|false|0|no) CFG_opensles_bridge="off" ;;
+            on|true|1|yes) CFG_opensles_bridge="on" ;;
+            force) CFG_opensles_bridge="force" ;;
+            *) log_warn "Invalid PILASRUNNER_OPENSL_BRIDGE value: ${PILASRUNNER_OPENSL_BRIDGE:-}. Keeping opensles_bridge=$CFG_opensles_bridge." ;;
+        esac
+        log_warn "PILASRUNNER_OPENSL_BRIDGE overrides opensles_bridge. opensles_bridge=$CFG_opensles_bridge"
+    fi
+
+    if [ -n "${PILASRUNNER_HOTKEY_QUIT:-}" ]; then
+        CFG_hotkey_quit="$(normalize_bool "${PILASRUNNER_HOTKEY_QUIT:-}" "$CFG_hotkey_quit" "PILASRUNNER_HOTKEY_QUIT")"
+        log_warn "PILASRUNNER_HOTKEY_QUIT overrides hotkey_quit. hotkey_quit=$CFG_hotkey_quit"
     fi
 }
 
@@ -686,7 +793,7 @@ apply_configured_paths() {
     GAMES_DIR="$(resolve_runtime_path "$CFG_games_dir" "games")"
     CACHE_DIR="$(resolve_runtime_path "$CFG_cache_dir" "cache")"
     UI_ENTRY="$(resolve_runtime_path "$CFG_ui_path" "ui/index.html")"
-    UI_FONT="$(resolve_runtime_path "$CFG_ui_font" "assets/fonts/Alata-Regular.ttf")"
+    UI_FONT="$(resolve_runtime_path "$CFG_ui_font" "assets/fonts/Alata-Regular.woff2")"
 
     ensure_dir "$GAMES_DIR" "games" || return 1
     ensure_dir "$CACHE_DIR" "cache" || return 1
@@ -1027,11 +1134,445 @@ select_game_by_token() {
     return 1
 }
 
-show_menu() {
+open_menu_tty() {
+    local candidate=""
+
+    MENU_TTY=""
+    MENU_INPUT_FD="0"
+    MENU_OUTPUT_FD="1"
+
+    if [ -t 0 ]; then
+        log_info "Using stdin/stdout for the launcher menu UI."
+        return 0
+    fi
+
+    for candidate in "${PILASRUNNER_MENU_TTY:-}" /dev/tty /dev/tty0 /dev/tty1 /dev/console; do
+        [ -n "$candidate" ] || continue
+        [ -e "$candidate" ] || continue
+
+        if exec 8< "$candidate" 2>> "$LOG_FILE"; then
+            if exec 9> "$candidate" 2>> "$LOG_FILE"; then
+                MENU_TTY="$candidate"
+                MENU_INPUT_FD="8"
+                MENU_OUTPUT_FD="9"
+                log_info "Using launcher menu TTY: $MENU_TTY"
+                return 0
+            fi
+            exec 8<&- 2>/dev/null || true
+        fi
+    done
+
+    log_warn "No readable and writable TTY was found for the launcher menu UI."
+    return 1
+}
+
+close_menu_tty() {
+    if [ "$MENU_INPUT_FD" = "8" ]; then
+        exec 8<&- 2>/dev/null || true
+    fi
+    if [ "$MENU_OUTPUT_FD" = "9" ]; then
+        exec 9>&- 2>/dev/null || true
+    fi
+    MENU_TTY=""
+    MENU_INPUT_FD="0"
+    MENU_OUTPUT_FD="1"
+}
+
+menu_printf() {
+    if [ "$MENU_OUTPUT_FD" = "9" ]; then
+        printf "$@" >&9
+    else
+        printf "$@"
+    fi
+}
+
+menu_line() {
+    if [ "$MENU_OUTPUT_FD" = "9" ]; then
+        printf '%s\n' "$*" >&9
+    else
+        printf '%s\n' "$*"
+    fi
+}
+
+menu_control() {
+    if [ "$MENU_OUTPUT_FD" = "9" ]; then
+        printf '%b' "$1" >&9
+    else
+        printf '%b' "$1"
+    fi
+}
+
+menu_read_one() {
+    local __target="$1"
+    local key=""
+
+    if [ "$MENU_INPUT_FD" = "8" ]; then
+        IFS= read -r -s -n 1 key <&8 || return 1
+    else
+        IFS= read -r -s -n 1 key || return 1
+    fi
+
+    printf -v "$__target" '%s' "$key"
+    return 0
+}
+
+menu_read_extra() {
+    local __target="$1"
+    local count="$2"
+    local text=""
+
+    if [ "$MENU_INPUT_FD" = "8" ]; then
+        IFS= read -r -s -n "$count" -t 0.08 text <&8 || true
+    else
+        IFS= read -r -s -n "$count" -t 0.08 text || true
+    fi
+
+    printf -v "$__target" '%s' "$text"
+    return 0
+}
+
+read_menu_action() {
+    local key=""
+    local rest=""
+
+    menu_read_one key || return 1
+
+    case "$key" in
+        $'\033')
+            menu_read_extra rest 2
+            case "$rest" in
+                "[A"|"OA") printf '%s' 'up' ;;
+                "[B"|"OB") printf '%s' 'down' ;;
+                *) printf '%s' 'back' ;;
+            esac
+            ;;
+        "")
+            printf '%s' 'launch'
+            ;;
+        " ")
+            printf '%s' 'launch'
+            ;;
+        w|W|k|K)
+            printf '%s' 'up'
+            ;;
+        s|S|j|J)
+            printf '%s' 'down'
+            ;;
+        a|A|l|L)
+            printf '%s' 'launch'
+            ;;
+        b|B|q|Q)
+            printf '%s' 'back'
+            ;;
+        [0-9])
+            printf 'number:%s' "$key"
+            ;;
+        *)
+            printf '%s' 'none'
+            ;;
+    esac
+}
+
+render_tty_ui() {
+    local selected="$1"
+    local count="${#GAME_NAMES[@]}"
+    local page_size=10
+    local start=0
+    local end=0
+    local i=0
+    local kind=""
+
+    if [ "$count" -gt "$page_size" ]; then
+        start=$((selected - page_size / 2))
+        [ "$start" -lt 0 ] && start=0
+        if [ $((start + page_size)) -gt "$count" ]; then
+            start=$((count - page_size))
+        fi
+    fi
+    end=$((start + page_size))
+    [ "$end" -gt "$count" ] && end="$count"
+
+    menu_control '\033[2J\033[H'
+    menu_line "===================================================="
+    menu_line " YoYo Pilas Runner"
+    menu_line " Inspired by YoYo Loader Vita, powered by gmloader-next"
+    menu_line "===================================================="
+    menu_line "Games: $count | Runtime: $LOADER_ARCH | Loader: $LOADER_MODE"
+    menu_line ""
+
+    if [ "$start" -gt 0 ]; then
+        menu_line "    ..."
+    fi
+
+    for ((i = start; i < end; i++)); do
+        if [ "${GAME_KINDS[$i]}" = "folder" ]; then
+            kind="folder"
+        else
+            kind="apk"
+        fi
+
+        if [ "$i" -eq "$selected" ]; then
+            menu_printf '\033[7m > %02d  %-34.34s  [%s]\033[0m\n' "$((i + 1))" "${GAME_NAMES[$i]}" "$kind"
+        else
+            menu_printf '   %02d  %-34.34s  [%s]\n' "$((i + 1))" "${GAME_NAMES[$i]}" "$kind"
+        fi
+    done
+
+    if [ "$end" -lt "$count" ]; then
+        menu_line "    ..."
+    fi
+
+    menu_line ""
+    menu_line "Up/Down: Move   A/Enter: Launch   B/Esc: Exit"
+    menu_line "Select + Start closes the running game."
+}
+
+render_noninteractive_menu_preview() {
     local count="${#GAME_NAMES[@]}"
     local i=0
-    local choice=""
-    local display_kind=""
+    local kind=""
+
+    say ""
+    say "===================================================="
+    say " YoYo Pilas Runner"
+    say " Inspired by YoYo Loader Vita, powered by gmloader-next"
+    say "===================================================="
+    say "Games: $count | Runtime: $LOADER_ARCH | Loader: $LOADER_MODE"
+    say ""
+    for ((i = 0; i < count; i++)); do
+        if [ "${GAME_KINDS[$i]}" = "folder" ]; then
+            kind="folder"
+        else
+            kind="apk"
+        fi
+        printf '   %02d  %-34.34s  [%s]\n' "$((i + 1))" "${GAME_NAMES[$i]}" "$kind"
+    done
+    say ""
+}
+
+run_native_menu() {
+    local native_ui=""
+    local games_file="$TMP_DIR/native-games-$$.tsv"
+    local selection_file="$TMP_DIR/native-selection-$$.txt"
+    local status=0
+    local selected_index=""
+    local i=0
+    local host_os=""
+    local boot_tty="${PILASRUNNER_TTY:-/dev/tty0}"
+    local fb_path="${PILASRUNNER_FB:-/dev/fb0}"
+
+    case "${PILASRUNNER_MENU_BACKEND:-auto}" in
+        tty|bash|terminal|python|visual) return 3 ;;
+    esac
+
+    host_os="$(uname -s 2>/dev/null || printf '%s' unknown)"
+    case "$host_os" in
+        Linux*) ;;
+        *)
+            log_info "Native C menu skipped on non-Linux host: $host_os"
+            return 3
+            ;;
+    esac
+
+    case "$ARCH_FAMILY" in
+        aarch64) native_ui="$NATIVE_UI_AARCH64" ;;
+        armhf) native_ui="$NATIVE_UI_ARMHF" ;;
+    esac
+
+    if [ -z "$native_ui" ] || [ ! -f "$native_ui" ]; then
+        case "$LOADER_ARCH" in
+            aarch64) native_ui="$NATIVE_UI_AARCH64" ;;
+            armhf) native_ui="$NATIVE_UI_ARMHF" ;;
+        esac
+    fi
+
+    [ -n "$native_ui" ] && [ -f "$native_ui" ] || {
+        log_warn "Native C launcher UI binary was not found for arch=$ARCH_FAMILY loader=$LOADER_ARCH."
+        return 3
+    }
+
+    make_executable "$native_ui" || return 3
+
+    : > "$games_file" || return 3
+    for ((i = 0; i < count; i++)); do
+        printf '%s\t%s\n' "${GAME_KINDS[$i]}" "${GAME_NAMES[$i]}" >> "$games_file" || return 3
+    done
+
+    rm -f "$selection_file" 2>/dev/null || true
+    prepare_input_device_access || true
+    if [ -e "$fb_path" ] && { [ ! -r "$fb_path" ] || [ ! -w "$fb_path" ]; }; then
+        chmod a+rw "$fb_path" >> "$LOG_FILE" 2>&1 || {
+            if [ -n "${ESUDO:-}" ]; then
+                # shellcheck disable=SC2086
+                $ESUDO chmod a+rw "$fb_path" >> "$LOG_FILE" 2>&1 || true
+            fi
+        }
+    fi
+    if [ "${PILASRUNNER_CLEAR_BOOT_TTY:-1}" != "0" ] && [ -e "$boot_tty" ] && [ -w "$boot_tty" ]; then
+        printf '\033c' > "$boot_tty" 2>> "$LOG_FILE" || true
+    fi
+    log_info "Starting native C launcher UI: $native_ui"
+
+    "$native_ui" \
+        --games "$games_file" \
+        --selection "$selection_file" \
+        --runtime "$LOADER_ARCH" \
+        --loader "$LOADER_MODE" \
+        --logo "$RUNTIME_DIR/assets/logo.webp" \
+        --font "$UI_FONT" \
+        --fb "$fb_path" \
+        --log "$LOG_FILE" >> "$LOG_FILE" 2>&1
+    status=$?
+
+    rm -f "$games_file" 2>/dev/null || true
+
+    if [ "$status" -eq 0 ] && [ -f "$selection_file" ]; then
+        selected_index="$(head -n 1 "$selection_file" 2>/dev/null || true)"
+        rm -f "$selection_file" 2>/dev/null || true
+        if printf '%s' "$selected_index" | grep -Eq '^[0-9]+$' && [ "$selected_index" -ge 0 ] && [ "$selected_index" -lt "$count" ]; then
+            select_game_index "$selected_index"
+            log_info "Native C launcher UI selected game: $SELECTED_GAME_NAME"
+            return 0
+        fi
+        log_warn "Native C launcher UI returned an invalid selection: $selected_index"
+        return 3
+    fi
+
+    rm -f "$selection_file" 2>/dev/null || true
+    if [ "$status" -eq 2 ]; then
+        log_info "User exited from native C launcher UI."
+        return 2
+    fi
+
+    log_warn "Native C launcher UI was unavailable or failed with status $status. Falling back to terminal menu."
+    return 3
+}
+
+run_python_menu() {
+    local python_bin=""
+    local menu_script="$SCRIPTS_DIR/menu_ui.py"
+    local games_file="$TMP_DIR/menu-games-$$.tsv"
+    local selection_file="$TMP_DIR/menu-selection-$$.txt"
+    local status=0
+    local selected_index=""
+    local i=0
+
+    case "${PILASRUNNER_MENU_BACKEND:-auto}" in
+        tty|bash) return 3 ;;
+    esac
+
+    [ -f "$menu_script" ] || return 3
+
+    python_bin="$(find_python_runtime || true)"
+    [ -n "$python_bin" ] || return 3
+
+    : > "$games_file" || return 3
+    for ((i = 0; i < count; i++)); do
+        printf '%s\t%s\n' "${GAME_KINDS[$i]}" "${GAME_NAMES[$i]}" >> "$games_file" || return 3
+    done
+
+    rm -f "$selection_file" 2>/dev/null || true
+    prepare_input_device_access || true
+
+    "$python_bin" "$menu_script" \
+        --games "$games_file" \
+        --selection "$selection_file" \
+        --runtime "$LOADER_ARCH" \
+        --loader "$LOADER_MODE" \
+        --tty "$MENU_TTY" >> "$LOG_FILE" 2>&1
+    status=$?
+
+    rm -f "$games_file" 2>/dev/null || true
+
+    if [ "$status" -eq 0 ] && [ -f "$selection_file" ]; then
+        selected_index="$(head -n 1 "$selection_file" 2>/dev/null || true)"
+        rm -f "$selection_file" 2>/dev/null || true
+        if printf '%s' "$selected_index" | grep -Eq '^[0-9]+$' && [ "$selected_index" -ge 0 ] && [ "$selected_index" -lt "$count" ]; then
+            select_game_index "$selected_index"
+            log_info "Python launcher UI selected game: $SELECTED_GAME_NAME"
+            return 0
+        fi
+        log_warn "Python launcher UI returned an invalid selection: $selected_index"
+        return 3
+    fi
+
+    rm -f "$selection_file" 2>/dev/null || true
+    if [ "$status" -eq 2 ]; then
+        log_info "User exited from Python launcher UI."
+        return 2
+    fi
+
+    log_warn "Python launcher UI was unavailable or failed with status $status. Falling back to Bash TTY UI."
+    return 3
+}
+
+run_visual_menu() {
+    local python_bin=""
+    local visual_script="$SCRIPTS_DIR/visual_ui.py"
+    local games_file="$TMP_DIR/visual-games-$$.tsv"
+    local selection_file="$TMP_DIR/visual-selection-$$.txt"
+    local status=0
+    local selected_index=""
+    local i=0
+
+    case "${PILASRUNNER_MENU_BACKEND:-auto}" in
+        tty|bash|terminal) return 3 ;;
+    esac
+
+    [ -f "$visual_script" ] || return 3
+
+    python_bin="$(find_python_runtime || true)"
+    [ -n "$python_bin" ] || return 3
+
+    : > "$games_file" || return 3
+    for ((i = 0; i < count; i++)); do
+        printf '%s\t%s\n' "${GAME_KINDS[$i]}" "${GAME_NAMES[$i]}" >> "$games_file" || return 3
+    done
+
+    rm -f "$selection_file" 2>/dev/null || true
+    prepare_input_device_access || true
+
+    "$python_bin" "$visual_script" \
+        --games "$games_file" \
+        --selection "$selection_file" \
+        --runtime "$LOADER_ARCH" \
+        --loader "$LOADER_MODE" \
+        --logo "$RUNTIME_DIR/assets/logo.webp" \
+        --log "$LOG_FILE" >> "$LOG_FILE" 2>&1
+    status=$?
+
+    rm -f "$games_file" 2>/dev/null || true
+
+    if [ "$status" -eq 0 ] && [ -f "$selection_file" ]; then
+        selected_index="$(head -n 1 "$selection_file" 2>/dev/null || true)"
+        rm -f "$selection_file" 2>/dev/null || true
+        if printf '%s' "$selected_index" | grep -Eq '^[0-9]+$' && [ "$selected_index" -ge 0 ] && [ "$selected_index" -lt "$count" ]; then
+            select_game_index "$selected_index"
+            log_info "Framebuffer launcher UI selected game: $SELECTED_GAME_NAME"
+            return 0
+        fi
+        log_warn "Framebuffer launcher UI returned an invalid selection: $selected_index"
+        return 3
+    fi
+
+    rm -f "$selection_file" 2>/dev/null || true
+    if [ "$status" -eq 2 ]; then
+        log_info "User exited from framebuffer launcher UI."
+        return 2
+    fi
+
+    log_warn "Framebuffer launcher UI was unavailable or failed with status $status. Falling back to TTY menu."
+    return 3
+}
+
+show_menu() {
+    local count="${#GAME_NAMES[@]}"
+    local selected=0
+    local action=""
+    local requested_number=0
+    local native_menu_status=0
+    local python_menu_status=0
+    local visual_menu_status=0
 
     if [ "$count" -eq 0 ]; then
         say "No compatible APK files were found."
@@ -1041,7 +1582,7 @@ show_menu() {
         return 1
     fi
 
-    if [ -n "${PILASRUNNER_SELECT:-}" ]; then
+    if [ -n "${PILASRUNNER_SELECT:-}" ] && { [ "$CFG_dry_run" = "true" ] || [ "${PILASRUNNER_ALLOW_SELECT_BYPASS:-0}" = "1" ]; }; then
         if select_game_by_token "${PILASRUNNER_SELECT:-}"; then
             log_warn "PILASRUNNER_SELECT selected game: $SELECTED_GAME_NAME"
             return 0
@@ -1051,67 +1592,107 @@ show_menu() {
         log_error "PILASRUNNER_SELECT did not match any scanned game: ${PILASRUNNER_SELECT:-}"
         return 1
     fi
-
-    if [ ! -t 0 ]; then
-        if [ "$count" -eq 1 ]; then
-            select_game_index 0
-            log_warn "No interactive terminal is available. The only scanned game was selected automatically: $SELECTED_GAME_NAME"
-            return 0
-        fi
-
-        if [ "${PILASRUNNER_AUTORUN_FIRST:-1}" = "1" ] || [ "${PILASRUNNER_AUTORUN_FIRST:-true}" = "true" ]; then
-            select_game_index 0
-            log_warn "No interactive terminal is available. The first scanned game was selected automatically: $SELECTED_GAME_NAME"
-            return 0
-        fi
-
-        say "No interactive terminal is available, so the game menu cannot be shown."
-        say "Set PILASRUNNER_SELECT to choose a game, or PILASRUNNER_AUTORUN_FIRST=1 to run the first scanned game."
-        log_error "No interactive terminal available for game selection."
-        return 1
+    if [ -n "${PILASRUNNER_SELECT:-}" ]; then
+        log_warn "Ignoring PILASRUNNER_SELECT because normal launches must pass through the UI. Set PILASRUNNER_ALLOW_SELECT_BYPASS=1 only for explicit QA automation."
     fi
 
-    while true; do
-        say ""
-        say "=============================================="
-        say " YoYo Pilas Runner"
-        say " Inspired by YoYo Loader Vita, powered by gmloader-next"
-        say "=============================================="
-        say "Runtime: $LOADER_ARCH | Games: $count"
-        say ""
-        for ((i = 0; i < count; i++)); do
-            if [ "${GAME_KINDS[$i]}" = "folder" ]; then
-                display_kind="folder"
-            else
-                display_kind="apk"
-            fi
-            printf '%2d) %-32s [%s]\n' "$((i + 1))" "${GAME_NAMES[$i]}" "$display_kind"
-        done
-        say "0) Exit"
-        printf 'Select a game: '
+    run_native_menu
+    native_menu_status=$?
+    if [ "$native_menu_status" -eq 0 ]; then
+        return 0
+    fi
+    if [ "$native_menu_status" -eq 2 ]; then
+        return 2
+    fi
 
-        if ! read -r choice; then
-            log_warn "Input ended before game selection."
+    if [ "${PILASRUNNER_ALLOW_PYTHON_FB_UI:-0}" = "1" ]; then
+        run_visual_menu
+        visual_menu_status=$?
+    else
+        visual_menu_status=3
+        log_info "Python framebuffer launcher UI is disabled by default; set PILASRUNNER_ALLOW_PYTHON_FB_UI=1 to use it."
+    fi
+
+    if [ "$visual_menu_status" -eq 0 ]; then
+        return 0
+    fi
+    if [ "$visual_menu_status" -eq 2 ]; then
+        return 2
+    fi
+
+    if open_menu_tty; then
+        run_python_menu
+        python_menu_status=$?
+        if [ "$python_menu_status" -eq 0 ]; then
+            close_menu_tty
+            return 0
+        fi
+        if [ "$python_menu_status" -eq 2 ]; then
+            close_menu_tty
             return 2
         fi
 
-        choice="$(trim "$choice")"
-        case "$(lower "$choice")" in
-            0|q|quit|exit)
-                log_info "User exited from game menu."
+        while true; do
+            render_tty_ui "$selected"
+            action="$(read_menu_action)" || {
+                close_menu_tty
+                log_warn "Input ended before game selection."
                 return 2
-                ;;
-        esac
+            }
 
-        if printf '%s' "$choice" | grep -Eq '^[0-9]+$'; then
-            if [ "$choice" -ge 1 ] && [ "$choice" -le "$count" ]; then
-                select_game_index "$((choice - 1))"
-                return 0
-            fi
-        fi
+            case "$action" in
+                up)
+                    selected=$((selected - 1))
+                    [ "$selected" -lt 0 ] && selected=$((count - 1))
+                    ;;
+                down)
+                    selected=$((selected + 1))
+                    [ "$selected" -ge "$count" ] && selected=0
+                    ;;
+                launch)
+                    select_game_index "$selected"
+                    close_menu_tty
+                    log_info "Launcher UI selected game: $SELECTED_GAME_NAME"
+                    return 0
+                    ;;
+                back)
+                    close_menu_tty
+                    log_info "User exited from launcher UI."
+                    return 2
+                    ;;
+                number:*)
+                    requested_number="${action#number:}"
+                    if [ "$requested_number" -eq 0 ]; then
+                        close_menu_tty
+                        log_info "User exited from launcher UI with number 0."
+                        return 2
+                    fi
+                    if [ "$requested_number" -ge 1 ] && [ "$requested_number" -le "$count" ]; then
+                        selected=$((requested_number - 1))
+                        select_game_index "$selected"
+                        close_menu_tty
+                        log_info "Launcher UI selected game by number: $SELECTED_GAME_NAME"
+                        return 0
+                    fi
+                    ;;
+                *)
+                    ;;
+            esac
+        done
+    fi
 
-        say "Invalid selection. Try again."
-    done
+    render_noninteractive_menu_preview
+    if [ "${PILASRUNNER_ALLOW_HEADLESS_AUTORUN:-0}" = "1" ]; then
+        sleep "${PILASRUNNER_MENU_FALLBACK_DELAY:-2}"
+        select_game_index 0
+        log_warn "Headless autorun was explicitly enabled. Selected first scanned game: $SELECTED_GAME_NAME"
+        return 0
+    fi
+
+    say "No menu input terminal is available."
+    say "YoYo Pilas Runner will not start a game without a usable UI selection."
+    log_error "No usable launcher UI input was available. Refusing to auto-launch a game."
+    return 1
 }
 
 validate_apk() {
@@ -1334,6 +1915,226 @@ prepare_game_cache() {
     return 0
 }
 
+guest_arch_dir_for_loader() {
+    case "$LOADER_ARCH" in
+        aarch64) printf '%s' "arm64-v8a" ;;
+        armhf) printf '%s' "armeabi-v7a" ;;
+        *) printf '%s' "" ;;
+    esac
+}
+
+apk_libyoyo_entry_for_loader() {
+    case "$LOADER_ARCH" in
+        aarch64)
+            if [ "$APK_HAS_ARM64" = "true" ]; then
+                printf '%s' "lib/arm64-v8a/libyoyo.so"
+                return 0
+            fi
+            ;;
+        armhf)
+            if [ "$APK_HAS_ARMV7" = "true" ]; then
+                printf '%s' "lib/armeabi-v7a/libyoyo.so"
+                return 0
+            fi
+            if [ "$APK_HAS_ARMEABI" = "true" ]; then
+                printf '%s' "lib/armeabi/libyoyo.so"
+                return 0
+            fi
+            ;;
+    esac
+
+    return 1
+}
+
+opensles_bridge_for_loader() {
+    case "$LOADER_ARCH" in
+        aarch64)
+            if [ -f "$LIB_DIR/opensles/arm64-v8a/libopensles.so" ]; then
+                printf '%s' "$LIB_DIR/opensles/arm64-v8a/libopensles.so"
+                return 0
+            fi
+            if [ -f "$LIB_DIR/arm64-v8a/libopensles.so" ]; then
+                printf '%s' "$LIB_DIR/arm64-v8a/libopensles.so"
+                return 0
+            fi
+            if [ -f "$LIB_DIR/arm64-v8a/libOpenSLES.so" ]; then
+                printf '%s' "$LIB_DIR/arm64-v8a/libOpenSLES.so"
+                return 0
+            fi
+            ;;
+        armhf)
+            if [ -f "$LIB_DIR/opensles/armeabi-v7a/libopensles.so" ]; then
+                printf '%s' "$LIB_DIR/opensles/armeabi-v7a/libopensles.so"
+                return 0
+            fi
+            if [ -f "$LIB_DIR/android/armeabi-v7a/libopensles.so" ]; then
+                printf '%s' "$LIB_DIR/android/armeabi-v7a/libopensles.so"
+                return 0
+            fi
+            if [ -f "$LIB_DIR/android/armeabi-v7a/libOpenSLES.so" ]; then
+                printf '%s' "$LIB_DIR/android/armeabi-v7a/libOpenSLES.so"
+                return 0
+            fi
+            ;;
+    esac
+
+    return 1
+}
+
+opensles_support_dir_for_loader() {
+    case "$LOADER_ARCH" in
+        aarch64)
+            [ -d "$LIB_DIR/opensles/arm64-v8a" ] && printf '%s' "$LIB_DIR/opensles/arm64-v8a" && return 0
+            ;;
+        armhf)
+            [ -d "$LIB_DIR/opensles/armeabi-v7a" ] && printf '%s' "$LIB_DIR/opensles/armeabi-v7a" && return 0
+            ;;
+    esac
+
+    return 1
+}
+
+elf_needer_for_system() {
+    case "$ARCH_FAMILY" in
+        aarch64)
+            [ -f "$ELF_NEEDER_AARCH64" ] && printf '%s' "$ELF_NEEDER_AARCH64" && return 0
+            ;;
+        armhf)
+            [ -f "$ELF_NEEDER_ARMHF" ] && printf '%s' "$ELF_NEEDER_ARMHF" && return 0
+            ;;
+    esac
+
+    case "$LOADER_ARCH" in
+        aarch64)
+            [ -f "$ELF_NEEDER_AARCH64" ] && printf '%s' "$ELF_NEEDER_AARCH64" && return 0
+            ;;
+        armhf)
+            [ -f "$ELF_NEEDER_ARMHF" ] && printf '%s' "$ELF_NEEDER_ARMHF" && return 0
+            ;;
+    esac
+
+    return 1
+}
+
+copy_native_lib_dir_into_overlay() {
+    local source_dir="$1"
+    local target_dir="$2"
+
+    [ -d "$source_dir" ] || return 0
+    mkdir -p "$target_dir" 2>> "$LOG_FILE" || return 1
+    cp -R "$source_dir"/. "$target_dir"/ 2>> "$LOG_FILE" || return 1
+    return 0
+}
+
+prepare_opensles_overlay() {
+    local guest_arch=""
+    local apk_entry=""
+    local overlay_root=""
+    local overlay_arch=""
+    local bridge_lib=""
+    local support_dir=""
+    local helper=""
+    local patched_libyoyo=""
+
+    OPENSL_OVERLAY_ROOT=""
+    OPENSL_OVERLAY_ARCH_DIR=""
+    OPENSL_BRIDGE_LIB=""
+
+    case "$CFG_opensles_bridge" in
+        on|force) ;;
+        *)
+            log_info "OpenSL ES bridge overlay disabled. Launching with the APK's original libyoyo.so for maximum compatibility."
+            return 0
+            ;;
+    esac
+
+    [ "$LOADER_MODE" = "next" ] || {
+        log_info "OpenSL ES bridge overlay skipped for legacy gmloader."
+        return 0
+    }
+
+    guest_arch="$(guest_arch_dir_for_loader)"
+    if [ -z "$guest_arch" ]; then
+        log_warn "OpenSL ES bridge overlay skipped because loader architecture is unknown."
+        return 0
+    fi
+
+    apk_entry="$(apk_libyoyo_entry_for_loader || true)"
+    if [ -z "$apk_entry" ]; then
+        log_warn "OpenSL ES bridge overlay skipped because no compatible libyoyo.so entry was found for loader arch $LOADER_ARCH."
+        return 0
+    fi
+
+    bridge_lib="$(opensles_bridge_for_loader || true)"
+    if [ -z "$bridge_lib" ]; then
+        log_warn "OpenSL ES bridge library is missing for $LOADER_ARCH. Audio may remain silent for Oboe/OpenSL ES games."
+        return 0
+    fi
+
+    support_dir="$(opensles_support_dir_for_loader || true)"
+
+    helper="$(elf_needer_for_system || true)"
+    if [ -z "$helper" ]; then
+        log_warn "OpenSL ES ELF patch helper is missing. Audio bridge cannot be forced into libyoyo.so."
+        return 0
+    fi
+
+    if ! command -v unzip >/dev/null 2>&1; then
+        log_warn "OpenSL ES bridge overlay requires unzip to extract libyoyo.so from APK."
+        return 0
+    fi
+
+    make_executable "$helper" || {
+        log_warn "OpenSL ES ELF patch helper is not executable: $helper"
+        return 0
+    }
+
+    overlay_root="$GAME_CACHE_DIR/native"
+    overlay_arch="$overlay_root/$guest_arch"
+    patched_libyoyo="$overlay_arch/libyoyo.so"
+
+    ensure_dir "$overlay_arch" "native audio overlay" || return 1
+
+    case "$LOADER_ARCH" in
+        aarch64)
+            copy_native_lib_dir_into_overlay "$LIB_DIR/arm64-v8a" "$overlay_arch" || return 1
+            copy_native_lib_dir_into_overlay "$LIB_DIR/android/arm64-v8a" "$overlay_arch" || return 1
+            ;;
+        armhf)
+            copy_native_lib_dir_into_overlay "$LIB_DIR/android/armeabi-v7a" "$overlay_arch" || return 1
+            copy_native_lib_dir_into_overlay "$LIB_DIR/android/armeabi-v7a-r19" "$overlay_arch" || true
+            ;;
+    esac
+
+    cp "$bridge_lib" "$overlay_arch/libopensle.so" 2>> "$LOG_FILE" || {
+        log_warn "Could not copy OpenSL ES bridge into overlay: $bridge_lib"
+        return 0
+    }
+    cp "$bridge_lib" "$overlay_arch/libopensles.so" 2>> "$LOG_FILE" || true
+    cp "$bridge_lib" "$overlay_arch/libOpenSLES.so" 2>> "$LOG_FILE" || true
+    if [ -n "$support_dir" ] && [ -f "$support_dir/libpthread.so.0" ]; then
+        cp "$support_dir/libpthread.so.0" "$overlay_arch/libpthread.so.0" 2>> "$LOG_FILE" || true
+    fi
+
+    if ! unzip -p "$SELECTED_APK" "$apk_entry" > "$patched_libyoyo" 2>> "$LOG_FILE"; then
+        log_warn "Could not extract $apk_entry from APK for OpenSL ES overlay."
+        rm -f "$patched_libyoyo" 2>/dev/null || true
+        return 0
+    fi
+
+    if "$helper" "$patched_libyoyo" >> "$LOG_FILE" 2>&1; then
+        OPENSL_OVERLAY_ROOT="$overlay_root"
+        OPENSL_OVERLAY_ARCH_DIR="$overlay_arch"
+        OPENSL_BRIDGE_LIB="$overlay_arch/libopensle.so"
+        log_info "OpenSL ES bridge overlay prepared: root=$OPENSL_OVERLAY_ROOT arch_dir=$OPENSL_OVERLAY_ARCH_DIR"
+        log_info "Patched libyoyo.so dependency for OpenSL ES bridge: $patched_libyoyo"
+        return 0
+    fi
+
+    log_warn "OpenSL ES dependency patch did not apply to $patched_libyoyo. Audio bridge will not be forced for this game."
+    return 0
+}
+
 json_escape() {
     local value="${1:-}"
     value="${value//\\/\\\\}"
@@ -1358,12 +2159,17 @@ loader_bin=$LOADER_BIN
 loader_arch=$LOADER_ARCH
 loader_mode=$LOADER_MODE
 library_path=$(build_library_path)
+opensles_overlay_root=$OPENSL_OVERLAY_ROOT
+opensles_overlay_arch_dir=$OPENSL_OVERLAY_ARCH_DIR
 xdg_runtime_dir=$APP_XDG_RUNTIME_DIR
 display=${DISPLAY:-}
 wayland_display=${WAYLAND_DISPLAY:-}
 sdl_videodriver=${SDL_VIDEODRIVER:-}
 display_probe=$CFG_display_probe
 display_wait_seconds=$CFG_display_wait_seconds
+audio_driver=$CFG_audio_driver
+audio_sample_rate=$CFG_audio_sample_rate
+opensles_bridge=$CFG_opensles_bridge
 ui_entry=$UI_ENTRY
 ui_font=$UI_FONT
 system_arch_raw=$ARCH_RAW
@@ -1382,6 +2188,8 @@ fullscreen=$CFG_fullscreen
 dump_shaders=$CFG_dump_shaders
 trace_vm=$CFG_trace_vm
 controls_backend=$CFG_controls_backend
+hotkey_quit=$CFG_hotkey_quit
+hotkey_quit_grace_seconds=$CFG_hotkey_quit_grace_seconds
 dry_run=$CFG_dry_run
 EOF
 }
@@ -1737,6 +2545,11 @@ build_gmloader_lib_path() {
     local root_arch_dir=""
     local android_arch_dir=""
 
+    if [ -n "$OPENSL_OVERLAY_ROOT" ] && [ -d "$OPENSL_OVERLAY_ROOT" ]; then
+        printf '%s' "$OPENSL_OVERLAY_ROOT"
+        return 0
+    fi
+
     case "$LOADER_ARCH" in
         aarch64)
             root_arch_dir="$LIB_DIR/arm64-v8a"
@@ -1771,6 +2584,100 @@ build_gmloader_lib_path() {
     printf '%s' ""
 }
 
+find_runtime_arch_library() {
+    local libname="$1"
+    local arch_dir=""
+    local root=""
+    local candidate=""
+
+    case "$LOADER_ARCH" in
+        aarch64) arch_dir="arm64-v8a" ;;
+        armhf) arch_dir="armeabi-v7a" ;;
+        *) arch_dir="" ;;
+    esac
+
+    for root in "$OPENSL_OVERLAY_ROOT" "$LIB_DIR" "$LIB_DIR/android" "$LIB_DIR/opensles" "$LIB_DIR/audio"; do
+        [ -n "$root" ] || continue
+        if [ -n "$arch_dir" ]; then
+            candidate="$root/$arch_dir/$libname"
+            if [ -f "$candidate" ]; then
+                printf '%s' "$candidate"
+                return 0
+            fi
+        fi
+
+        candidate="$root/$libname"
+        if [ -f "$candidate" ]; then
+            printf '%s' "$candidate"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+detect_pulse_server() {
+    local uid=""
+    local socket_path=""
+
+    [ -z "${PULSE_SERVER:-}" ] || return 0
+
+    uid="$(id -u 2>/dev/null || printf '%s' '0')"
+    for socket_path in "/run/user/$uid/pulse/native" "/var/run/user/$uid/pulse/native" "/tmp/pulse-$uid/native"; do
+        if [ -S "$socket_path" ]; then
+            export PULSE_SERVER="unix:$socket_path"
+            log_info "Detected PulseAudio socket: $PULSE_SERVER"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+configure_audio_environment() {
+    local driver="$CFG_audio_driver"
+    local opensles_lib=""
+    local opensles_lib_lower=""
+    local aaudio_lib=""
+
+    opensles_lib="$(find_runtime_arch_library "libOpenSLES.so" || true)"
+    opensles_lib_lower="$(find_runtime_arch_library "libopensles.so" || true)"
+    aaudio_lib="$(find_runtime_arch_library "libaaudio.so" || true)"
+
+    detect_pulse_server || true
+
+    case "$driver" in
+        off)
+            export SDL_AUDIODRIVER="dummy"
+            ;;
+        auto)
+            log_info "SDL audio driver left on automatic selection."
+            ;;
+        *)
+            export SDL_AUDIODRIVER="$driver"
+            ;;
+    esac
+
+    export SDL_AUDIO_FREQUENCY="${SDL_AUDIO_FREQUENCY:-$CFG_audio_sample_rate}"
+    export SLES_SDL_FREQ="${SLES_SDL_FREQ:-$CFG_audio_sample_rate}"
+    export ALSOFT_DRIVERS="${ALSOFT_DRIVERS:-alsa,pulse,pipewire}"
+
+    if [ -n "$opensles_lib" ] || [ -n "$opensles_lib_lower" ]; then
+        log_info "Android OpenSL ES runtime found: ${opensles_lib:-$opensles_lib_lower}"
+        if [ -n "$OPENSL_OVERLAY_ROOT" ]; then
+            log_info "OpenSL ES bridge overlay is active: $OPENSL_OVERLAY_ROOT"
+        fi
+    else
+        log_warn "Android OpenSL ES runtime libOpenSLES.so was not found for $LOADER_ARCH. Oboe-based GameMaker audio may fall back to silence."
+    fi
+
+    if [ -n "$aaudio_lib" ]; then
+        log_info "Android AAudio runtime found: $aaudio_lib"
+    else
+        log_info "Android AAudio runtime libaaudio.so was not found. Oboe should try OpenSL ES next when libOpenSLES.so is available."
+    fi
+}
+
 log_display_environment() {
     local library_path="$1"
     local gmloader_lib_path="${2:-}"
@@ -1778,6 +2685,11 @@ log_display_environment() {
     log_info "Environment DISPLAY=${DISPLAY:-}"
     log_info "Environment WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-}"
     log_info "Environment SDL_VIDEODRIVER=${SDL_VIDEODRIVER:-}"
+    log_info "Environment SDL_AUDIODRIVER=${SDL_AUDIODRIVER:-}"
+    log_info "Environment SDL_AUDIO_FREQUENCY=${SDL_AUDIO_FREQUENCY:-}"
+    log_info "Environment SLES_SDL_FREQ=${SLES_SDL_FREQ:-}"
+    log_info "Environment PULSE_SERVER=${PULSE_SERVER:-}"
+    log_info "Environment ALSOFT_DRIVERS=${ALSOFT_DRIVERS:-}"
     log_info "Environment XDG_RUNTIME_DIR=$APP_XDG_RUNTIME_DIR"
     log_info "Environment app LD_LIBRARY_PATH=$library_path"
     log_info "Environment GMLOADER_LIB_PATH=$gmloader_lib_path"
@@ -1897,6 +2809,7 @@ finish_dry_run() {
     library_path="$(build_library_path)"
     gmloader_lib_path="$(build_gmloader_lib_path)"
     begin_readable_game_log
+    configure_audio_environment
     log_info "Dry run requested. Skipping loader execution."
     log_info "Dry run selected loader: $LOADER_BIN ($LOADER_ARCH, mode=$LOADER_MODE)"
     log_info "Dry run LD_LIBRARY_PATH=$library_path"
@@ -1913,6 +2826,9 @@ finish_dry_run() {
         printf 'Loader mode: %s\n' "$LOADER_MODE"
         printf 'LD_LIBRARY_PATH: %s\n' "$library_path"
         printf 'GMLOADER_LIB_PATH: %s\n' "$gmloader_lib_path"
+        printf 'SDL_AUDIODRIVER: %s\n' "${SDL_AUDIODRIVER:-}"
+        printf 'SDL_AUDIO_FREQUENCY: %s\n' "${SDL_AUDIO_FREQUENCY:-}"
+        printf 'SLES_SDL_FREQ: %s\n' "${SLES_SDL_FREQ:-}"
         printf 'XDG_RUNTIME_DIR: %s\n' "$APP_XDG_RUNTIME_DIR"
         printf 'DISPLAY: %s\n' "${DISPLAY:-}"
         printf 'WAYLAND_DISPLAY: %s\n' "${WAYLAND_DISPLAY:-}"
@@ -2009,14 +2925,236 @@ restart_portmaster_input_events() {
     log_info "Requested oga_events restart."
 }
 
+find_python_runtime() {
+    local candidate=""
+
+    for candidate in "${PYTHON_BIN:-}" "${PYTHON:-}" python3 python; do
+        [ -n "$candidate" ] || continue
+        if command -v "$candidate" >/dev/null 2>&1; then
+            command -v "$candidate"
+            return 0
+        fi
+        if [ -x "$candidate" ]; then
+            printf '%s' "$candidate"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+prepare_input_device_access() {
+    local event_path=""
+    local changed="false"
+    local input_log="${GAME_LOG:-$LOG_FILE}"
+
+    [ -d /dev/input ] || return 0
+
+    for event_path in /dev/input/event*; do
+        [ -e "$event_path" ] || continue
+        if [ ! -r "$event_path" ]; then
+            if [ -n "${ESUDO:-}" ]; then
+                # shellcheck disable=SC2086
+                $ESUDO chmod a+r "$event_path" >> "$input_log" 2>&1 && changed="true" || true
+            else
+                chmod a+r "$event_path" >> "$input_log" 2>&1 && changed="true" || true
+            fi
+        fi
+    done
+
+    [ "$changed" = "true" ] && log_info "Adjusted read access for one or more /dev/input/event devices."
+    return 0
+}
+
+pid_is_alive() {
+    local pid="$1"
+    [ -n "$pid" ] || return 1
+    kill -0 "$pid" >/dev/null 2>&1
+}
+
+cleanup_stale_runtime_processes() {
+    local proc=""
+    local pid=""
+    local cmdline=""
+    local killed="false"
+
+    [ -d /proc ] || return 0
+
+    for proc in /proc/[0-9]*; do
+        [ -d "$proc" ] || continue
+        pid="${proc##*/}"
+        case "$pid" in
+            "$$"|"$PPID") continue ;;
+        esac
+
+        cmdline="$(tr '\000' ' ' < "$proc/cmdline" 2>/dev/null || true)"
+        [ -n "$cmdline" ] || continue
+
+        case "$cmdline" in
+            *"$RUNTIME_DIR/bin/gmloadernext.aarch64"*|*"$RUNTIME_DIR/bin/gmloadernext.armhf"*|*"$RUNTIME_DIR/bin/gmloader.armhf"*|*"$RUNTIME_DIR/bin/pilasrunner-ui.aarch64"*|*"$RUNTIME_DIR/bin/pilasrunner-ui.armhf"*|*"$RUNTIME_DIR/bin/pilasrunner-hotkey.aarch64"*|*"$RUNTIME_DIR/bin/pilasrunner-hotkey.armhf"*)
+                log_warn "Killing stale YoYo Pilas Runner process pid=$pid cmd=$cmdline"
+                kill -KILL "$pid" >/dev/null 2>&1 || true
+                killed="true"
+                ;;
+        esac
+    done
+
+    [ "$killed" = "true" ] && sleep 0.2
+    return 0
+}
+
+force_kill_game_process() {
+    local pid="$1"
+    local reason="$2"
+    local pgid=""
+    [ -n "$pid" ] || return 1
+    log_warn "$reason. Sending SIGKILL to pid $pid."
+    pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]' || true)"
+    if [ "$pgid" = "$pid" ]; then
+        log_warn "Target pid $pid is its own process-group leader; sending group SIGKILL too."
+        kill -KILL "-$pid" >/dev/null 2>&1 || true
+    fi
+    kill -KILL "$pid" >/dev/null 2>&1 || true
+}
+
+hotkey_flag_monitor() {
+    local game_pid="$1"
+    local flag_path="$2"
+    local log_path="$3"
+
+    while pid_is_alive "$game_pid"; do
+        if [ -n "$flag_path" ] && [ -f "$flag_path" ]; then
+            printf '[%s] [HOTKEY_SH] Force-quit flag detected for pid %s.\n' "$(timestamp)" "$game_pid" >> "$log_path" 2>/dev/null || true
+            force_kill_game_process "$game_pid" "Shell hotkey monitor force quit"
+            return 0
+        fi
+        sleep 0.1
+    done
+    return 0
+}
+
+start_hotkey_watcher() {
+    local game_pid="$1"
+    local native_hotkey=""
+    local python_bin=""
+    local watcher="$SCRIPTS_DIR/hotkey_watcher.py"
+    local watcher_pid=""
+    local started="false"
+
+    HOTKEY_WATCHER_PID=""
+    HOTKEY_WATCHER_PIDS=""
+    HOTKEY_WAS_TRIGGERED="false"
+    HOTKEY_FORCE_QUIT_FLAG="$GAME_CACHE_DIR/force_quit.flag"
+    rm -f "$HOTKEY_FORCE_QUIT_FLAG" 2>/dev/null || true
+
+    [ "$CFG_hotkey_quit" = "true" ] || {
+        log_info "Select+Start force-quit hotkey disabled by configuration."
+        return 1
+    }
+
+    case "$ARCH_FAMILY" in
+        aarch64) native_hotkey="$NATIVE_HOTKEY_AARCH64" ;;
+        armhf) native_hotkey="$NATIVE_HOTKEY_ARMHF" ;;
+    esac
+
+    if [ -z "$native_hotkey" ] || [ ! -f "$native_hotkey" ]; then
+        case "$LOADER_ARCH" in
+            aarch64) native_hotkey="$NATIVE_HOTKEY_AARCH64" ;;
+            armhf) native_hotkey="$NATIVE_HOTKEY_ARMHF" ;;
+        esac
+    fi
+
+    prepare_input_device_access || true
+
+    if [ -n "$native_hotkey" ] && [ -f "$native_hotkey" ]; then
+        if make_executable "$native_hotkey"; then
+            "$native_hotkey" \
+                --pid "$game_pid" \
+                --flag "$HOTKEY_FORCE_QUIT_FLAG" \
+                --log "$GAME_LOG" >> "$GAME_LOG" 2>&1 &
+            watcher_pid="$!"
+            HOTKEY_WATCHER_PID="$watcher_pid"
+            HOTKEY_WATCHER_PIDS="${HOTKEY_WATCHER_PIDS:+$HOTKEY_WATCHER_PIDS }$watcher_pid"
+            started="true"
+            log_info "Started native Select+Start hotkey watcher: pid=$watcher_pid target=$game_pid bin=$native_hotkey"
+        else
+            log_warn "Native Select+Start hotkey watcher exists but could not be made executable: $native_hotkey"
+        fi
+    else
+        log_warn "Native Select+Start hotkey watcher binary was not found for arch=$ARCH_FAMILY loader=$LOADER_ARCH."
+    fi
+
+    if [ -f "$watcher" ]; then
+        python_bin="$(find_python_runtime || true)"
+    fi
+
+    if [ ! -f "$watcher" ]; then
+        log_warn "Hotkey watcher script was not found: $watcher"
+    elif [ -z "$python_bin" ]; then
+        log_warn "Python was not found. Select+Start force-quit hotkey is unavailable."
+    else
+        "$python_bin" "$watcher" \
+            --pid "$game_pid" \
+            --flag "$HOTKEY_FORCE_QUIT_FLAG" \
+            --log "$GAME_LOG" \
+            --grace "$CFG_hotkey_quit_grace_seconds" >> "$GAME_LOG" 2>&1 &
+
+        watcher_pid="$!"
+        HOTKEY_WATCHER_PIDS="${HOTKEY_WATCHER_PIDS:+$HOTKEY_WATCHER_PIDS }$watcher_pid"
+        [ -z "$HOTKEY_WATCHER_PID" ] && HOTKEY_WATCHER_PID="$watcher_pid"
+        started="true"
+        log_info "Started Python Select+Start hotkey watcher fallback: pid=$watcher_pid target=$game_pid"
+    fi
+
+    hotkey_flag_monitor "$game_pid" "$HOTKEY_FORCE_QUIT_FLAG" "$GAME_LOG" &
+    watcher_pid="$!"
+    HOTKEY_WATCHER_PIDS="${HOTKEY_WATCHER_PIDS:+$HOTKEY_WATCHER_PIDS }$watcher_pid"
+    log_info "Started shell hotkey flag monitor: pid=$watcher_pid target=$game_pid"
+
+    [ "$started" = "true" ] && return 0
+    return 1
+}
+
+stop_hotkey_watcher() {
+    local watcher_pid=""
+    if [ -n "$HOTKEY_WATCHER_PIDS" ]; then
+        for watcher_pid in $HOTKEY_WATCHER_PIDS; do
+            kill "$watcher_pid" >/dev/null 2>&1 || true
+        done
+        for watcher_pid in $HOTKEY_WATCHER_PIDS; do
+            wait "$watcher_pid" >/dev/null 2>&1 || true
+        done
+        log_info "Stopped Select+Start hotkey watcher pids=$HOTKEY_WATCHER_PIDS"
+        HOTKEY_WATCHER_PID=""
+        HOTKEY_WATCHER_PIDS=""
+    elif [ -n "$HOTKEY_WATCHER_PID" ]; then
+        kill "$HOTKEY_WATCHER_PID" >/dev/null 2>&1 || true
+        wait "$HOTKEY_WATCHER_PID" >/dev/null 2>&1 || true
+        log_info "Stopped Select+Start hotkey watcher pid=$HOTKEY_WATCHER_PID"
+        HOTKEY_WATCHER_PID=""
+    fi
+}
+
+check_hotkey_force_quit() {
+    HOTKEY_WAS_TRIGGERED="false"
+
+    if [ -n "$HOTKEY_FORCE_QUIT_FLAG" ] && [ -f "$HOTKEY_FORCE_QUIT_FLAG" ]; then
+        HOTKEY_WAS_TRIGGERED="true"
+        log_warn "Select+Start force-quit hotkey was triggered for '$SELECTED_GAME_NAME'."
+        printf '[%s] Select+Start force-quit requested.\n' "$(timestamp)" >> "$GAME_LOG" 2>/dev/null || true
+    fi
+}
+
 run_game() {
     local status=0
     local library_path=""
     local gmloader_lib_path=""
+    local game_pid=""
 
     library_path="$(build_library_path)"
     gmloader_lib_path="$(build_gmloader_lib_path)"
     begin_readable_game_log
+    configure_audio_environment
 
     log_info "Launching game: $SELECTED_GAME_NAME"
     log_info "APK path: $SELECTED_APK"
@@ -2042,6 +3180,9 @@ run_game() {
         printf 'Loader: %s\n' "$LOADER_BIN"
         printf 'XDG_RUNTIME_DIR: %s\n' "$APP_XDG_RUNTIME_DIR"
         printf 'GMLOADER_LIB_PATH: %s\n' "$gmloader_lib_path"
+        printf 'SDL_AUDIODRIVER: %s\n' "${SDL_AUDIODRIVER:-}"
+        printf 'SDL_AUDIO_FREQUENCY: %s\n' "${SDL_AUDIO_FREQUENCY:-}"
+        printf 'SLES_SDL_FREQ: %s\n' "${SLES_SDL_FREQ:-}"
     } >> "$GAME_LOG" 2>/dev/null || true
 
     start_gptokeyb || true
@@ -2078,17 +3219,34 @@ run_game() {
         export PILASRUNNER_RUNTIME_DIR="$RUNTIME_DIR"
         export PILASRUNNER_GAME_CACHE="$GAME_CACHE_DIR"
         cd "$RUNTIME_DIR" || exit 111
-        "$LOADER_BIN" -c "$GMLOADER_JSON"
-    ) >> "$GAME_LOG" 2>&1
+        exec "$LOADER_BIN" -c "$GMLOADER_JSON"
+    ) >> "$GAME_LOG" 2>&1 &
 
+    game_pid="$!"
+    log_info "Started gmloader-next process pid=$game_pid"
+    start_hotkey_watcher "$game_pid" || true
+    wait "$game_pid"
     status=$?
+    check_hotkey_force_quit
+    stop_hotkey_watcher
     stop_gptokeyb
     restart_portmaster_input_events
     if command -v pm_finish >/dev/null 2>&1; then
         pm_finish >> "$GAME_LOG" 2>&1 || log_warn "pm_finish returned a non-zero status."
     fi
+
+    if [ "$HOTKEY_WAS_TRIGGERED" = "true" ]; then
+        status=0
+    fi
+
     log_info "gmloader-next exit code for '$SELECTED_GAME_NAME': $status"
     printf '[%s] Exit code: %s\n' "$(timestamp)" "$status" >> "$GAME_LOG" 2>/dev/null || true
+
+    if [ "$HOTKEY_WAS_TRIGGERED" = "true" ]; then
+        finish_readable_game_log "$status" "gmloader-next force quit"
+        say "Game closed by Select + Start."
+        return 0
+    fi
 
     if [ "$status" -eq 0 ]; then
         finish_readable_game_log "$status" "gmloader-next"
@@ -2106,10 +3264,12 @@ run_legacy_game() {
     local status=0
     local library_path=""
     local gmloader_lib_path=""
+    local game_pid=""
 
     library_path="$(build_library_path)"
     gmloader_lib_path="$(build_gmloader_lib_path)"
     begin_readable_game_log
+    configure_audio_environment
 
     log_info "Launching game with legacy gmloader: $SELECTED_GAME_NAME"
     log_info "APK path: $SELECTED_APK"
@@ -2125,6 +3285,9 @@ run_legacy_game() {
         printf 'Loader: %s\n' "$LOADER_BIN"
         printf 'XDG_RUNTIME_DIR: %s\n' "$APP_XDG_RUNTIME_DIR"
         printf 'GMLOADER_LIB_PATH: %s\n' "$gmloader_lib_path"
+        printf 'SDL_AUDIODRIVER: %s\n' "${SDL_AUDIODRIVER:-}"
+        printf 'SDL_AUDIO_FREQUENCY: %s\n' "${SDL_AUDIO_FREQUENCY:-}"
+        printf 'SLES_SDL_FREQ: %s\n' "${SLES_SDL_FREQ:-}"
     } >> "$GAME_LOG" 2>/dev/null || true
 
     start_gptokeyb || true
@@ -2154,17 +3317,34 @@ run_legacy_game() {
         export PILASRUNNER_RUNTIME_DIR="$RUNTIME_DIR"
         export PILASRUNNER_GAME_CACHE="$GAME_CACHE_DIR"
         cd "$RUNTIME_DIR" || exit 111
-        "$LOADER_BIN" "$SELECTED_APK"
-    ) >> "$GAME_LOG" 2>&1
+        exec "$LOADER_BIN" "$SELECTED_APK"
+    ) >> "$GAME_LOG" 2>&1 &
 
+    game_pid="$!"
+    log_info "Started legacy gmloader process pid=$game_pid"
+    start_hotkey_watcher "$game_pid" || true
+    wait "$game_pid"
     status=$?
+    check_hotkey_force_quit
+    stop_hotkey_watcher
     stop_gptokeyb
     restart_portmaster_input_events
     if command -v pm_finish >/dev/null 2>&1; then
         pm_finish >> "$GAME_LOG" 2>&1 || log_warn "pm_finish returned a non-zero status."
     fi
+
+    if [ "$HOTKEY_WAS_TRIGGERED" = "true" ]; then
+        status=0
+    fi
+
     log_info "legacy gmloader exit code for '$SELECTED_GAME_NAME': $status"
     printf '[%s] Exit code: %s\n' "$(timestamp)" "$status" >> "$GAME_LOG" 2>/dev/null || true
+
+    if [ "$HOTKEY_WAS_TRIGGERED" = "true" ]; then
+        finish_readable_game_log "$status" "legacy gmloader force quit"
+        say "Game closed by Select + Start."
+        return 0
+    fi
 
     if [ "$status" -eq 0 ]; then
         finish_readable_game_log "$status" "legacy gmloader"
@@ -2207,6 +3387,8 @@ main() {
     detect_arch
 
     select_loader_binary || return 1
+    cleanup_stale_runtime_processes || true
+
     scan_games || {
         readable_section "Result"
         readable_log "Game scan failed. Open detailed.log for the scanner output."
@@ -2252,6 +3434,8 @@ main() {
         say "See logs: $READABLE_LOG and $DETAILED_LOG"
         return 1
     }
+
+    prepare_opensles_overlay || log_warn "OpenSL ES audio bridge preparation failed non-fatally; continuing with original game libraries."
 
     generate_gmloader_json || {
         readable_section "Result"

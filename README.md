@@ -1,5 +1,7 @@
 # YoYo Pilas Runner
 
+<img src="https://files.catbox.moe/3w8i1r.webp" width="600" height="400" alt="Imagem">
+
 YoYo Pilas Runner is a unified PortMaster frontend inspired by the simple library experience of [YoYo Loader Vita](https://github.com/Rinnegatamante/yoyoloader_vita). Its goal is to let users run Android games made with GameMaker Studio by copying APK files into one folder and selecting them from a simple menu.
 
 The execution layer is [gmloader-next](https://github.com/JohnnyonFlame/gmloader-next). This package now includes prebuilt `gmloadernext.aarch64` and `gmloadernext.armhf` binaries, the gmloader-next source tree under `pilasrunner/vendor/gmloader-next`, Android redistributable libraries, automatic `gmloader.json` generation, per-game saves/shaders/cache, logs, optional per-game controls, and basic PortMaster helper integration. A legacy `gmloader.armhf` fallback is also included for older 32-bit experiments, but gmloader-next is preferred whenever possible.
@@ -21,6 +23,9 @@ No commercial games, APKs, or proprietary GameMaker game content are included. U
 - Uses the bundled `pilasrunner/bin/gmloadernext.aarch64` binary.
 - Uses the bundled `pilasrunner/bin/gmloadernext.armhf` binary for ARMv7/32-bit APKs.
 - Keeps a bundled legacy `pilasrunner/bin/gmloader.armhf` fallback for older cases.
+- Bundles an OpenSL ES audio bridge for gmloader-next/Oboe games and prepares it automatically per game.
+- Opens the native framebuffer UI on every normal launch; it refuses to auto-start a game without a real UI selection.
+- Renders the native UI with the bundled Alata Regular TTF and a compact 4:3-friendly layout.
 - Falls back to built vendor outputs if present.
 - Generates per-game `gmloader.json` with absolute paths.
 - Creates per-game `saves`, `shaders`, `home`, XDG data/config/cache folders, and a 0700 `XDG_RUNTIME_DIR`.
@@ -30,8 +35,8 @@ No commercial games, APKs, or proprietary GameMaker game content are included. U
 - Copies and parses optional `controls.ini`.
 - Generates PortMaster-style `.gptk` and `gptokeyb2.ini` files.
 - Supports deterministic QA runs with `dry_run=true` or `PILASRUNNER_DRY_RUN=1`.
-- Supports automated selection with `PILASRUNNER_SELECT`.
-- Auto-selects the only scanned game, or the first scanned game, when PortMaster launches without an interactive terminal.
+- Supports automated selection with `PILASRUNNER_SELECT` only during dry-run QA, or when `PILASRUNNER_ALLOW_SELECT_BYPASS=1` is explicitly set.
+- Refuses headless autorun by default, even when only one game is present.
 - Auto-detects PortMaster `control.txt` and calls `get_controls` when available.
 - Starts GptokeyB automatically when configured or auto-detected.
 - Calls `pm_platform_helper` and `pm_finish` when PortMaster provides them.
@@ -43,7 +48,7 @@ No commercial games, APKs, or proprietary GameMaker game content are included. U
 - It does not download games.
 - It does not download proprietary runtimes.
 - It does not guarantee every GameMaker APK will work.
-- It does not patch incompatible games automatically.
+- It does not patch broad game incompatibilities automatically beyond the cached OpenSL ES audio handoff.
 - It does not import ZIP, `data.win`, Windows executables, native Linux games, or non-APK formats.
 - It does not emulate ARM Linux binaries on Windows; desktop validation can verify the launcher path, but real gameplay still needs an ARM PortMaster device.
 
@@ -61,17 +66,28 @@ YoYo Pilas Runner/
     |-- launcher.sh
     |-- port.json
     |-- gameinfo.xml
+    |-- screenshot.webp
     |-- screenshot.png
+    |-- cover.webp
     |-- cover.png
     |-- assets/
+    |   |-- logo.webp
     |   |-- logo.png
+    |   |-- logo_420.ppm
     |   |-- loading_screen.txt
     |   `-- fonts/
+    |       |-- Alata-Regular.woff2
     |       `-- Alata-Regular.ttf
     |-- bin/
     |   |-- gmloader.armhf
     |   |-- gmloadernext.aarch64
-    |   `-- gmloadernext.armhf
+    |   |-- gmloadernext.armhf
+    |   |-- pilasrunner-elf-needer.aarch64
+    |   |-- pilasrunner-elf-needer.armhf
+    |   |-- pilasrunner-hotkey.aarch64
+    |   |-- pilasrunner-hotkey.armhf
+    |   |-- pilasrunner-ui.aarch64
+    |   `-- pilasrunner-ui.armhf
     |-- cache/
     |-- config/
     |   `-- global.ini
@@ -86,7 +102,10 @@ YoYo Pilas Runner/
     |   |   |-- armeabi-v7a/
     |   |   `-- armeabi-v7a-r19/
     |   |-- armhf/
-    |   `-- legacy-armhf/
+    |   |-- legacy-armhf/
+    |   `-- opensles/
+    |       |-- arm64-v8a/
+    |       `-- armeabi-v7a/
     |-- logs/
     |-- scripts/
     |   |-- build_gmloader_next.sh
@@ -110,12 +129,18 @@ YoYo Pilas Runner/
 The project logo is bundled in:
 
 ```text
-pilasrunner/assets/logo.png
+pilasrunner/assets/logo.webp
 ```
 
-The same logo is also used as the PortMaster-facing `cover.png` and `screenshot.png`.
+The same logo is also used as the PortMaster-facing `cover.webp` and `screenshot.webp`. PNG fallbacks are still bundled for frontends that do not show WebP yet, and `assets/logo_420.ppm` is generated for the native framebuffer UI.
 
 The default UI font is bundled in:
+
+```text
+pilasrunner/assets/fonts/Alata-Regular.woff2
+```
+
+The native framebuffer UI resolves this WOFF2 path through the generated companion:
 
 ```text
 pilasrunner/assets/fonts/Alata-Regular.ttf
@@ -141,7 +166,7 @@ The site demo opens that same UI instead of maintaining a separate copy:
 demo/index.html
 ```
 
-This keeps the demo extremely faithful to the interface shipped with YoYo Pilas Runner. The UI uses the bundled app logo, the bundled Alata font, a Vita-inspired dark handheld layout, an interactive game list, architecture/runtime details, filters, and simulated launch/scan/config actions.
+This keeps the demo extremely faithful to the interface shipped with YoYo Pilas Runner. The UI uses the bundled app logo, the bundled Alata font, a Vita-inspired dark handheld layout, an interactive game list, architecture/runtime details, and the same single launch-first flow used by the native PortMaster UI.
 
 ## gmloader-next Included As Source
 
@@ -271,6 +296,29 @@ pilasrunner/vendor/gmloader-next/build/arm-linux-gnueabihf/gmloader/gmloadernext
 
 The launcher can use those vendor build outputs directly, but installing them into `pilasrunner/bin` is cleaner.
 
+## OpenSL ES Audio Bridge
+
+YoYo Pilas Runner includes a native OpenSL ES compatibility bridge for GameMaker APKs that route audio through Android Oboe/OpenSL ES. The bridge is bundled here:
+
+```text
+pilasrunner/lib/opensles/arm64-v8a/
+pilasrunner/lib/opensles/armeabi-v7a/
+```
+
+Before gmloader-next starts, the launcher creates a per-game native overlay under:
+
+```text
+pilasrunner/cache/<game>/native/<apk-arch>/
+```
+
+It extracts the selected APK's `libyoyo.so` into that overlay, patches only the cached copy, and adds the bundled OpenSL ES bridge so `slCreateEngine` and the buffer queue interfaces resolve inside gmloader-next. Users do not need to place `libOpenSLES.so` or any audio runtime in the package manually.
+
+The bridge writes PCM through ALSA on the PortMaster device. It probes common playback nodes automatically. For device-specific debugging, set:
+
+```bash
+PILASRUNNER_ALSA_PCM=/dev/snd/pcmC0D0p
+```
+
 ## Adding Games
 
 Loose APK:
@@ -291,23 +339,9 @@ Unsupported files in `games` are ignored and logged.
 
 ## Menu
 
-The menu is intentionally simple and terminal-friendly:
+The normal PortMaster flow opens the native framebuffer UI in `pilasrunner/bin/pilasrunner-ui.aarch64` or `pilasrunner/bin/pilasrunner-ui.armhf`. This UI mirrors the bundled HTML demo, uses the same logo and Alata font, and always shows the game list before launching even when only one game is present.
 
-```text
-==============================================
- YoYo Pilas Runner
- Inspired by YoYo Loader Vita, powered by gmloader-next
-==============================================
-Runtime: aarch64 | Games: 2
-
- 1) CelesteClassic                  [apk]
- 2) ExampleFolderGame               [folder]
-0) Exit
-```
-
-This keeps the first version portable across typical PortMaster environments.
-
-When PortMaster starts the port without an interactive stdin terminal, the launcher cannot show this text menu. In that case it automatically selects the only scanned game. If multiple games are present, it selects the first sorted game by default. Set `PILASRUNNER_SELECT` to choose a specific game, or set `PILASRUNNER_AUTORUN_FIRST=0` to make a non-interactive multi-game launch fail instead of autorunning the first entry.
+The launcher only falls back to the plain terminal menu when framebuffer or input access is unavailable. It does not auto-launch a game from cache, from a previous failed run, or from a single-game library. Set `PILASRUNNER_DRY_RUN=1 PILASRUNNER_SELECT=GameName` for deterministic QA selection without executing ARM binaries.
 
 ## Generated Per-Game Cache
 
@@ -318,6 +352,12 @@ pilasrunner/cache/NORMALIZED_GAME_NAME/
 |-- gmloader.json
 |-- run.info
 |-- cache.version
+|-- native/
+|   `-- <apk-arch>/
+|       |-- libyoyo.so
+|       |-- libopensle.so
+|       |-- libopensles.so
+|       `-- libpthread.so.0
 |-- saves/
 |-- shaders/
 |-- home/
@@ -374,7 +414,7 @@ default_arch=auto
 games_dir=games
 cache_dir=cache
 ui_path=ui/index.html
-ui_font=assets/fonts/Alata-Regular.ttf
+ui_font=assets/fonts/Alata-Regular.woff2
 fullscreen=true
 dump_shaders=false
 trace_vm=false
@@ -515,8 +555,8 @@ The package includes:
 ```text
 pilasrunner/port.json
 pilasrunner/gameinfo.xml
-pilasrunner/screenshot.png
-pilasrunner/cover.png
+pilasrunner/screenshot.webp
+pilasrunner/cover.webp
 ```
 
 This is experimental metadata for PortMaster-style packaging. The port is not marked ready-to-run because users must provide legal APKs.
