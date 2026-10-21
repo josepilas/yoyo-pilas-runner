@@ -1,3 +1,9 @@
+<p align="center">
+  <a href="https://ko-fi.com/josepilas" target="_blank" rel="noopener noreferrer">
+    <img src="https://josepilas.github.io/kofi.webp" alt="Ko-fi" width="300" />
+  </a>
+</p>
+
 # YoYo Pilas Runner
 
 <img src="https://files.catbox.moe/3w8i1r.webp" width="600" height="400" alt="Imagem">
